@@ -1,0 +1,8 @@
+<Bindings>
+	<Binding name="AWAY_CLEAR" header="AWAY" category="ADDONS">
+		AWay.Clear()
+	</Binding>
+	<Binding name="AWAY_NEXT" header="AWAY" category="ADDONS">
+		AWay.Next()
+	</Binding>
+</Bindings>

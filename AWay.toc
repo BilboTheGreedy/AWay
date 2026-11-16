@@ -1,0 +1,13 @@
+## Interface: 16001
+## Title: AWay
+## Notes: Waypoints with /way, an arrow with distance, and pins on the map and minimap
+## Version: 0.1.0
+## Category: Map
+## IconTexture: Interface\Minimap\MinimapArrow
+## Dependencies: ACore
+## OptionalDeps: AMap
+## SavedVariables: AWayDB
+## SavedVariablesPerCharacter: AWayCharDB
+
+Core.lua
+Waypoint.lua
