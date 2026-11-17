@@ -22,7 +22,9 @@ end
 local function save()
 	if not ns.chardb then return end
 	local list = {}
-	for i, p in ipairs(points) do list[i] = { p.map, p.x, p.y, p.title } end
+	for i, p in ipairs(points) do
+		list[i] = { p.map, p.x, p.y, p.named and p.title or false, p.corpse and true or false }
+	end
 	ns.chardb.list = list
 	ns.chardb.active = active
 end
@@ -32,7 +34,11 @@ local function resetEta()
 end
 
 function Way.VectorTo(p)
-	if not p or not p.north then return nil end
+	if not p then return nil end
+	if not p.north then
+		p.north, p.west, p.continent = ns.WorldPos(p.map, p.x, p.y)
+		if not p.north then return nil end
+	end
 	local north, west, instance = ns.PlayerWorld()
 	if not north then return nil end
 	if p.continent and instance and p.continent ~= instance then return nil end
@@ -93,14 +99,15 @@ local function pinTooltip(self)
 	GameTooltip:AddLine(ns.MapName(p.map) .. "  " .. ns.Coord(p.x) .. ", " .. ns.Coord(p.y), 0.9, 0.9, 0.92)
 	local dist = Way.VectorTo(p)
 	if dist then GameTooltip:AddLine(math.floor(dist + 0.5) .. " yards", 0.58, 0.6, 0.65) end
-	GameTooltip:AddLine("Click: go here   Right-click: remove", 0.58, 0.6, 0.65)
+	GameTooltip:AddLine("Click: go here   Shift-click: share   Right-click: remove", 0.58, 0.6, 0.65)
 	GameTooltip:Show()
 end
 
-local function makePin(parent, size)
+local function makePin(parent, size, level)
 	local f = CreateFrame("Button", nil, parent)
 	f:SetSize(size, size)
 	f:SetFrameStrata("HIGH")
+	f:SetFrameLevel(math.min(9000, (ns.Num(parent:GetFrameLevel()) or 0) + level))
 	f.tex = f:CreateTexture(nil, "OVERLAY")
 	f.tex:SetAllPoints(f)
 	f:SetScript("OnEnter", pinTooltip)
@@ -111,6 +118,8 @@ local function makePin(parent, size)
 		if not i then return end
 		if button == "RightButton" then
 			AWay.Remove(i)
+		elseif IsShiftKeyDown and IsShiftKeyDown() then
+			Way.ShareCommand(nil, i)
 		else
 			AWay.Select(i)
 		end
@@ -128,6 +137,8 @@ local function menu(anchor)
 		end },
 		{ text = "Clear all", func = function() AWay.Clear() end },
 		{ text = "Next waypoint", func = function() AWay.Next() end },
+		{ text = "Closest waypoint", func = function() AWay.Closest() end },
+		{ text = "Share with the group", func = function() Way.ShareCommand() end },
 		{ text = "Show on map", func = function()
 			local c = current()
 			if not c then return end
@@ -188,7 +199,7 @@ function Way.UpdateMapPins()
 				n = n + 1
 				local f = mapPins[n]
 				if not f then
-					f = makePin(c, 20)
+					f = makePin(c, 20, 2200)
 					mapPins[n] = f
 				end
 				f.point = p
@@ -240,7 +251,7 @@ local function updateMini(facing)
 					n = n + 1
 					local f = miniPins[n]
 					if not f then
-						f = makePin(Minimap, 14)
+						f = makePin(Minimap, 14, 6)
 						miniPins[n] = f
 					end
 					f.point = p
@@ -266,7 +277,9 @@ function Way.Update()
 		return
 	end
 	local dist, bearing = Way.Vector()
-	if dist and ns.db.arrive and dist <= ARRIVE then
+	if dist and p.corpse and not p.left then
+		if dist > ARRIVE * 4 then p.left = true end
+	elseif dist and ns.db.arrive and dist <= ARRIVE then
 		ns.Print("arrived at " .. p.title)
 		if PlaySound and SOUNDKIT and SOUNDKIT.MAP_PING then pcall(PlaySound, SOUNDKIT.MAP_PING) end
 		Way.Drop(active, true)
@@ -307,28 +320,32 @@ function Way.Drop(index, auto)
 end
 
 local function make(map, x, y, title)
+	if ns.IsSecret(map) or ns.IsSecret(x) or ns.IsSecret(y) or ns.IsSecret(title) then return nil end
 	map, x, y = tonumber(map), tonumber(x), tonumber(y)
 	if not map or not x or not y then return nil end
 	if x > 1 or y > 1 then x, y = x / 100, y / 100 end
 	if x < 0 or x > 1 or y < 0 or y > 1 then return nil end
-	if type(title) ~= "string" or title == "" then
+	local named = type(title) == "string" and title ~= ""
+	if not named then
 		local name = ns.MapName(map)
 		title = (name ~= "" and (name .. " ") or "") .. ns.Coord(x) .. ", " .. ns.Coord(y)
 	end
-	local p = { map = map, x = x, y = y, title = title }
+	local p = { map = map, x = x, y = y, title = title, named = named }
 	p.north, p.west, p.continent = ns.WorldPos(map, x, y)
 	return p
 end
 
-function AWay.Add(map, x, y, title)
+local function add(map, x, y, title, corpse)
 	local p = make(map, x, y, title)
 	if not p then return false end
+	p.corpse = corpse
 	if ns.db and ns.db.single then
 		for i = #points, 1, -1 do points[i] = nil end
 	end
 	for i, q in ipairs(points) do
 		if q.map == p.map and math.abs(q.x - p.x) < 0.0005 and math.abs(q.y - p.y) < 0.0005 then
-			q.title = p.title
+			if p.named or not q.named then q.title, q.named = p.title, p.named end
+			if corpse then q.corpse, q.left = true, nil end
 			active = i
 			resetEta()
 			save()
@@ -344,6 +361,10 @@ function AWay.Add(map, x, y, title)
 	Way.Update()
 	ns:Fire("WAYPOINT", p)
 	return active
+end
+
+function AWay.Add(map, x, y, title)
+	return add(map, x, y, title)
 end
 
 function AWay.Remove(index)
@@ -397,22 +418,89 @@ function AWay.Count()
 	return #points
 end
 
+function AWay.Closest()
+	local best, bestDist
+	for i, p in ipairs(points) do
+		local dist = Way.VectorTo(p)
+		if dist and (not bestDist or dist < bestDist) then best, bestDist = i, dist end
+	end
+	if not best then return false end
+	return AWay.Select(best)
+end
+
+function AWay.Text(index)
+	local p = points[tonumber(index) or active or 0]
+	if not p then return nil end
+	return "/way #" .. p.map .. " " .. ns.Coord(p.x) .. " " .. ns.Coord(p.y) .. (p.named and (" " .. p.title) or "")
+end
+
+local CHANNELS = {
+	party = "PARTY", p = "PARTY", raid = "RAID", r = "RAID", guild = "GUILD", g = "GUILD", officer = "OFFICER",
+	say = "SAY", s = "SAY", yell = "YELL", instance = "INSTANCE_CHAT", i = "INSTANCE_CHAT",
+}
+
+function AWay.Share(index, channel)
+	local text = AWay.Text(index)
+	if not text then return false end
+	if channel then
+		channel = CHANNELS[tostring(channel):lower()]
+		if not channel then return false, text end
+	elseif IsInRaid and IsInRaid() then
+		channel = "RAID"
+	elseif IsInGroup and IsInGroup() then
+		channel = "PARTY"
+	else
+		return false, text
+	end
+	local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
+	if not send then return false, text end
+	local ok = pcall(send, text, channel)
+	return ok, text
+end
+
+function Way.ShareCommand(channel, index)
+	if not points[index or active or 0] then
+		ns.Print("no waypoint to share")
+		return false
+	end
+	local ok, text = AWay.Share(index, channel)
+	if not ok then ns.Print((channel and "cannot send to " .. channel or "not in a group") .. ": " .. tostring(text)) end
+	return ok
+end
+
+local COMMANDS = {
+	clear = "clear", reset = "clear", list = "list", next = "next", closest = "closest", nearest = "closest",
+	options = "options", config = "options", lock = "lock", unlock = "unlock", resetarrow = "resetarrow",
+	here = "here", share = "share",
+}
+
 function Way.Parse(msg)
 	msg = (msg or ""):gsub("^%s+", ""):gsub("%s+$", "")
 	if msg == "" then return nil end
 	local lower = msg:lower()
-	if lower == "clear" or lower == "reset" then return "clear" end
-	if lower == "list" then return "list" end
-	if lower == "next" then return "next" end
+	if COMMANDS[lower] then return COMMANDS[lower] end
 	local n = lower:match("^remove%s+(%d+)$") or lower:match("^del%s+(%d+)$")
 	if n then return "remove", tonumber(n) end
+	local channel = lower:match("^share%s+(%a+)$")
+	if channel then return "share", channel end
+	local title = msg:match("^[Hh][Ee][Rr][Ee]%s+(.+)$")
+	if title then return "here", title end
+	local map
+	local id, after = msg:match("^#(%d+)%s+(.+)$")
+	if id then
+		map = tonumber(id)
+		msg = after
+	end
 	local zone, xs, ys, rest = msg:match("^(.-)%s*(%d+%.?%d*)[%s,]+(%d+%.?%d*)%s*(.*)$")
 	if not xs then return nil end
 	local x, y = tonumber(xs), tonumber(ys)
 	if not x or not y or x > 100 or y > 100 then return nil end
-	local map
-	if zone and zone ~= "" then
+	if map then
+		if zone ~= "" then return nil end
+		if not ns.MapInfo(map) then return nil, "unknown map: " .. map end
+	elseif zone ~= "" then
 		map = ns.FindZone(zone)
+		if not map and zone:find(":", 1, true) then map = ns.FindZone(zone:match("^(.-):")) end
 		if not map then return nil, "unknown zone: " .. zone end
 	else
 		map = ns.MapID()
@@ -436,15 +524,81 @@ SlashCmdList["AWAY"] = function(msg)
 		end
 	elseif map == "next" then
 		AWay.Next()
+	elseif map == "closest" then
+		if not AWay.Closest() then ns.Print("no waypoint in reach") end
 	elseif map == "remove" then
 		if not AWay.Remove(x) then ns.Print("no waypoint " .. tostring(x)) end
+	elseif map == "share" then
+		Way.ShareCommand(x)
+	elseif map == "here" then
+		local pm, px, py = ns.PlayerPos()
+		local i = pm and AWay.Add(pm, px, py, x)
+		ns.Print(i and ("waypoint: " .. points[i].title) or "no position here")
+	elseif map == "options" or map == "lock" or map == "unlock" or map == "resetarrow" then
+		ns.Command(map)
 	elseif map then
 		local i = AWay.Add(map, x, y, title)
 		if i then ns.Print("waypoint: " .. points[i].title) end
 	else
-		ns.Print(x or "usage: /way [zone] x y [name], /way list, /way remove N, /way next, /way clear")
+		ns.Print(x or "usage: /way [zone or #map] x y [name], /way here, list, remove N, next, closest, share, clear, options")
 	end
 end
+
+local LINK_EVENTS = {
+	"CHAT_MSG_SAY", "CHAT_MSG_YELL", "CHAT_MSG_GUILD", "CHAT_MSG_OFFICER", "CHAT_MSG_PARTY", "CHAT_MSG_PARTY_LEADER",
+	"CHAT_MSG_RAID", "CHAT_MSG_RAID_LEADER", "CHAT_MSG_RAID_WARNING", "CHAT_MSG_INSTANCE_CHAT",
+	"CHAT_MSG_INSTANCE_CHAT_LEADER", "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER_INFORM", "CHAT_MSG_CHANNEL",
+}
+
+function Way.Linkify(msg)
+	if ns.IsSecret(msg) or type(msg) ~= "string" then return nil end
+	if not msg:find("/way #", 1, true) or msg:find("|", 1, true) then return nil end
+	local head, map, x, y, title = msg:match("^(.-)/way #(%d+) (%d+%.?%d*) (%d+%.?%d*)%s*(.*)$")
+	if not map or tonumber(x) > 100 or tonumber(y) > 100 then return nil end
+	local name = ns.MapName(tonumber(map))
+	local label = (name ~= "" and (name .. " ") or "") .. x .. ", " .. y .. (title ~= "" and (" " .. title) or "")
+	return head .. "|cff66d9ff|Haddon:away:" .. map .. ":" .. x .. ":" .. y .. ":" .. title .. "|h[" .. label .. "]|h|r"
+end
+
+local function chatFilter(_, _, msg, ...)
+	if not ns.db or not ns.db.links then return false end
+	local out = Way.Linkify(msg)
+	if not out then return false end
+	return false, out, ...
+end
+
+function Way.OnLink(link)
+	if ns.IsSecret(link) or type(link) ~= "string" then return false end
+	local map, x, y, title = link:match("^addon:away:(%d+):(%d+%.?%d*):(%d+%.?%d*):?(.*)$")
+	if not map then return false end
+	local i = AWay.Add(tonumber(map), tonumber(x) / 100, tonumber(y) / 100, title ~= "" and title or nil)
+	if i then ns.Print("waypoint: " .. points[i].title) end
+	return i and true or false
+end
+
+local function dropCorpse()
+	for i = #points, 1, -1 do
+		if points[i].corpse then Way.Drop(i, false) end
+	end
+end
+
+function Way.Died()
+	if not ns.db.corpse or ns.db.single then return false end
+	local map, x, y = ns.PlayerPos()
+	if not map then return false end
+	dropCorpse()
+	return add(map, x, y, type(CORPSE) == "string" and CORPSE or "Corpse", true) and true or false
+end
+
+function Way.Revived()
+	local dead = UnitIsDeadOrGhost and UnitIsDeadOrGhost("player")
+	if ns.IsSecret(dead) or dead then return end
+	dropCorpse()
+end
+
+ns:On("PLAYER_DEAD", function() Way.Died() end)
+ns:On("PLAYER_ALIVE", function() Way.Revived() end)
+ns:On("PLAYER_UNGHOST", function() Way.Revived() end)
 
 function Way.MapClick(button)
 	if AMap then return false end
@@ -460,14 +614,24 @@ end
 
 ns:Listen("LOGIN", function()
 	for _, s in ipairs(ns.chardb.list or {}) do
-		local p = make(s[1], s[2], s[3], s[4])
-		if p then points[#points + 1] = p end
+		local p = type(s) == "table" and make(s[1], s[2], s[3], s[4])
+		if p then
+			p.corpse = s[5] and true or nil
+			points[#points + 1] = p
+		end
 	end
 	active = tonumber(ns.chardb.active)
 	if not points[active or 0] then active = #points > 0 and #points or nil end
 	local sc = WorldMapFrame and WorldMapFrame.ScrollContainer
 	if sc and sc.HookScript and not AMap then
 		pcall(sc.HookScript, sc, "OnMouseUp", function(_, button) Way.MapClick(button) end)
+	end
+	local add = (ChatFrameUtil and ChatFrameUtil.AddMessageEventFilter) or ChatFrame_AddMessageEventFilter
+	if add then
+		for _, e in ipairs(LINK_EVENTS) do pcall(add, e, chatFilter) end
+	end
+	if hooksecurefunc and SetItemRef then
+		pcall(hooksecurefunc, "SetItemRef", function(link) Way.OnLink(link) end)
 	end
 	local ticker = CreateFrame("Frame")
 	local elapsed = 0

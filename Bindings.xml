@@ -2,7 +2,10 @@
 	<Binding name="AWAY_CLEAR" header="AWAY" category="ADDONS">
 		AWay.Clear()
 	</Binding>
-	<Binding name="AWAY_NEXT" header="AWAY" category="ADDONS">
+	<Binding name="AWAY_NEXT" category="ADDONS">
 		AWay.Next()
+	</Binding>
+	<Binding name="AWAY_CLOSEST" category="ADDONS">
+		AWay.Closest()
 	</Binding>
 </Bindings>
